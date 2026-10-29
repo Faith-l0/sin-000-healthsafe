@@ -29,8 +29,14 @@ cleanup through synchronous REST calls to asynchronous MQ decoupling and alertin
 Plus [`common/`](common) (no port) — the shared ActiveMQ broker and MQ config notes
 for `staffing-events-topic`: Staffing updates are broadcast as Events via the broker to decouple the frontend from the Staffing Service.
 
-**Status:** scaffold only — build files, Javalin bootstrap, and TODOs are in place; no
-business logic has been implemented yet.
+**Status:** partial. Stage 1 (ingestion) is done and tested. The message queue code exists in ward-service and is tested against a real broker, but it is not wired into the running services yet. The REST services and the equipment-alert consumer are still scaffolds.
+
+| Stage | State |
+|---|---|
+| 1. Ingestion (clean the CSV, serve it over REST) | Done, 5 unit tests |
+| 2. REST services (ward, alert-level, staffing) | Not started, still scaffolds |
+| 3. Topic (`staffing-events-topic`) | Consumer written and tested in ward-service; staffing-service does not publish yet |
+| 4. Queue (`equipment-failure-queue`) | Producer written and tested in ward-service; equipment-alert-service does not consume yet |
 
 ## Your task
 
@@ -60,122 +66,15 @@ limit, but budget your effort so you have a working stage 1-2 before spending ti
 on 3-4 — a complete core beats a half-done everything.
 
 Automated tests aren't required, but are a good way to show your work — see each
-service's `## Test` section for how to add JUnit 5.
+service's `## Test
 
-## Integration contracts
+Each module has its own tests. Run them from inside the module folder, because there is no parent pom:
 
-Endpoint shapes below are illustrative, not a fixed spec to match byte-for-byte —
-reasonable field names/status codes are fine as long as the calling service can
-consume them.
+    cd ingestion-service && mvn test      # 5 tests, no broker needed
+    cd ward-service && mvn test           # 3 tests, need the broker running
 
-| From | To | Call | Purpose |
-|---|---|---|---|
-| `ward-service` | `ingestion-service` | `GET /wards` → cleaned ward records | Populate its own ward/department list |
-| `staffing-service` | `ward-service` | `GET /wards/{id}` → `404` if unknown | Validate the ward before scheduling |
-| `staffing-service` | `alert-level-service` | `GET /alert-level` → `{ "level": 0-8 }` | Read current Emergency Status to size the on-call schedule |
-| `staffing-service` | `ward-service` (topic, stage 3) | publish to `staffing-events-topic` | Broadcast a schedule/status change |
-| `ward-service` (topic, stage 3) | — | subscribe to `staffing-events-topic` | React to staffing updates without polling |
-| `ward-service` (queue, stage 4) | `equipment-alert-service` | publish to `equipment-failure-queue` | Guarantee delivery of an equipment failure alert |
+The ward-service tests talk to a real ActiveMQ broker, so start it first:
 
-## Project structure
+    cd common && docker compose up -d
 
-```
-healthsafe/
-├── README.md
-├── .gitignore
-├── ingestion-service/          (port 7030)
-│   ├── pom.xml
-│   ├── README.md
-│   └── src/main/
-│       ├── java/co/wethinkcode/healthsafe/IngestionServiceApp.java
-│       └── resources/wards-outdated.csv
-├── ward-service/          (port 7031)
-├── alert-level-service/          (port 7032)
-├── staffing-service/          (port 7033)
-├── common/
-│   ├── docker-compose.yml
-│   └── README.md
-└── equipment-alert-service/          (port 7034)
-```
-
-## Build
-
-Requirements: Java 17+, Maven 3.8+, Docker (for the broker in `common/`).
-
-Every folder here (`ingestion-service/`, each domain service, and `equipment-alert-service/`) is
-an **independent** Maven project — there is no parent/aggregator pom. Build one at a
-time, e.g.:
-
-```
-cd ward-service
-mvn package
-```
-
-...or build every module in the repo in one pass from the project root:
-
-```
-find . -name pom.xml -execdir mvn -q package \;
-```
-
-## Run
-
-```
-# ingestion
-cd ingestion-service && mvn package && java -jar target/ingestion-service.jar
-
-# domain services, each in its own terminal
-# terminal 1
-cd ward-service && mvn package && java -jar target/ward-service.jar
-# terminal 2
-cd alert-level-service && mvn package && java -jar target/alert-level-service.jar
-# terminal 3
-cd staffing-service && mvn package && java -jar target/staffing-service.jar
-
-# MQ broker (needed once the MQ-aware services above are wired up)
-cd common && docker compose up -d
-
-# alerting
-cd equipment-alert-service && mvn package && java -jar target/equipment-alert-service.jar
-```
-
-| Service | Port |
-|---|---|
-| IngestionServiceApp (`ingestion-service`) | 7030 |
-| WardServiceApp (`ward-service`) | 7031 |
-| AlertLevelServiceApp (`alert-level-service`) | 7032 |
-| StaffingServiceApp (`staffing-service`) | 7033 |
-| EquipmentAlertServiceApp (`equipment-alert-service`) | 7034 |
-
-## Test
-
-No automated tests exist yet (this is a scaffold). Each running service exposes
-`/health`, so sanity-check manually:
-
-```
-curl http://localhost:7030/health   # -> OK
-```
-
-To add real tests to a module, add JUnit 5 and Surefire to its `pom.xml`:
-
-```xml
-<dependency>
-  <groupId>org.junit.jupiter</groupId>
-  <artifactId>junit-jupiter</artifactId>
-  <version>5.10.2</version>
-  <scope>test</scope>
-</dependency>
-```
-
-```xml
-<plugin>
-  <groupId>org.apache.maven.plugins</groupId>
-  <artifactId>maven-surefire-plugin</artifactId>
-  <version>3.2.5</version>
-</plugin>
-```
-
-then add tests under that module's `src/test/java/...` and run:
-
-```
-mvn test
-```
+Each test creates its own uniquely named queue or topic, so runs do not interfere with each other. The destinations show up in the ActiveMQ console at http://localhost:8161 (admin / admin).
